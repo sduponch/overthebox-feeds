@@ -57,7 +57,14 @@ function subscribe()
 
 	-- tprint(res)
 	if rcode == 200 then
+		local configfile = "/etc/config/overthebox"
+		if not file_exists(configfile) then
+			local file = io.open(configfile, "w")
+			file:write("")
+			file:close()
+		end
 		local uci = uci.cursor()
+		uci:set("overthebox", "me", "config")
 		uci:set("overthebox", "me", "token", res.token)
 		uci:set("overthebox", "me", "device_id", res.device_id)
 		uci:save("overthebox")
@@ -135,7 +142,7 @@ function config()
 		uci:set('network', res.vtun_conf.dev, 'multipath', 'off')
 		uci:set('network', res.vtun_conf.dev, 'delegate', '0')
 		uci:set('network', res.vtun_conf.dev, 'metric', res.vtun_conf.metric)
-		uci:set('network', res.vtun_conf.dev, 'auto', '0')
+		uci:delete('network', res.vtun_conf.dev, 'auto')
 		uci:set('network', res.vtun_conf.dev, 'type', 'tunnel')
 
 		addInterfaceInZone("wan", res.vtun_conf.dev)
@@ -160,7 +167,7 @@ function config()
 					uci:set('network', conf.dev, 'multipath', 'off')
 					uci:set('network', conf.dev, 'delegate', '0')
 					uci:set('network', conf.dev, 'metric', conf.metric)
-					uci:set('network', conf.dev, 'auto', '0')
+					uci:delete('network', conf.dev, 'auto')
 					uci:set('network', conf.dev, 'type', 'tunnel')
 
 					addInterfaceInZone("wan", conf.dev)
@@ -200,7 +207,7 @@ function config()
 		uci:set('network', res.glorytun_conf.dev, 'multipath', 'off')
 		uci:set('network', res.glorytun_conf.dev, 'delegate', '0')
 		uci:set('network', res.glorytun_conf.dev, 'metric', res.glorytun_conf.metric)
-		uci:set('network', res.glorytun_conf.dev, 'auto', '0')
+		uci:delete('network', res.glorytun_conf.dev, 'auto')
 		uci:set('network', res.glorytun_conf.dev, 'type', 'tunnel')
 
 		addInterfaceInZone("wan", res.glorytun_conf.dev)
@@ -231,7 +238,7 @@ function config()
 					uci:set('network', conf.dev, 'multipath', 'off')
 					uci:set('network', conf.dev, 'delegate', '0')
 					uci:set('network', conf.dev, 'metric', conf.metric)
-					uci:set('network', conf.dev, 'auto', '0')
+					uci:delete('network', conf.dev, 'auto')
 					uci:set('network', conf.dev, 'type', 'tunnel')
 
 					addInterfaceInZone("wan", conf.dev)
@@ -269,7 +276,7 @@ function config()
 		uci:set('network', res.glorytun_mud_conf.dev, 'multipath', 'off')
 		uci:set('network', res.glorytun_mud_conf.dev, 'delegate', '0')
 		uci:set('network', res.glorytun_mud_conf.dev, 'metric', res.glorytun_mud_conf.metric)
-		uci:set('network', res.glorytun_mud_conf.dev, 'auto', '0')
+		uci:delete('network', res.glorytun_mud_conf.dev, 'auto')
 		uci:set('network', res.glorytun_mud_conf.dev, 'type', 'tunnel')
 
 		addInterfaceInZone("wan", res.glorytun_mud_conf.dev)
@@ -581,15 +588,52 @@ function post_result_diagnostic(id, name, cmd, output, exit_code)
 	return (rcode == 200)
 end
 
+-- This function converts a remote access id to a name usable as key in uci.
+-- Uci doesn't support "-" in key names so we replace '-' by'_'.
+function remoteAccessIdToUci(remote_access_id)
+	return "remote_" .. string.gsub(remote_access_id, "-", "_")
+end
 
-
-function createKey(remoteId)
-	ret, key = create_ssh_key()
-	if ret and key then
-		local rcode, res = POST('devices/'..uci.cursor():get("overthebox", "me", "device_id", {}).."/remote_accesses/"..remoteId.."/keys",   {public_key=key})
-		return (rcode == 200), "ok"
+function remoteAccessPrepare(args)
+	if not args or not exists(args, 'remote_access_id') then
+		return false, "no arguments or remote_access_id arg is missing"
 	end
-	return false, "key not well created"
+
+	ret, key = create_ssh_key()
+
+	if not ret or not key then
+		return false, "key not well created"
+	end
+
+	local name = remoteAccessIdToUci(args.remote_access_id)
+	local uci = uci.cursor()
+	uci:set("overthebox", name, "remote")
+
+	-- create luci user if requested
+	if exists(args, 'luci_user', 'luci_password') and
+			args.luci_user ~= '' and args.luci_password ~= '' then
+
+		local ret, rcode = run("useradd -c "
+			.. args.remote_access_id
+			.. " -d /root -s /bin/false -u 0 -g root -MNo "
+			.. args.luci_user)
+
+		if not status_code_ok(rcode) then return false, "error creating luci user" end
+
+		rcode = sys.user.setpasswd(args.luci_user, args.luci_password)
+		if not status_code_ok(rcode) then
+			-- Rollback user creation
+			run("userdel -f " .. args.luci_user)
+			return false, "error when changing password for luci user"
+		end
+
+		uci:set("overthebox", name, "luci_user", args.luci_user)
+	end
+	uci:save("overthebox")
+	uci:commit("overthebox")
+
+	local rcode, res = POST('devices/'..uci.cursor():get("overthebox", "me", "device_id", {}).."/remote_accesses/"..args.remote_access_id.."/keys",   {public_key=key})
+	return (rcode == 200), "ok"
 end
 
 function create_ssh_key()
@@ -618,17 +662,16 @@ function create_ssh_key()
 end
 
 function remoteAccessConnect(args)
-	if not args or not exists( args, 'forwarded_port', 'ip', 'port', 'server_public_key', 'remote_public_key')    then
+	if not args or not exists(args, 'remote_access_id', 'forwarded_port',
+			'ip', 'port', 'server_public_key', 'remote_public_key') then
 		return false, "no arguments or missing"
 	end
 
-	local name="remote"..args.port
-	-- set arguments to config
+	local name = remoteAccessIdToUci(args.remote_access_id)
 	local uci = uci.cursor()
-	uci:set("overthebox", name, "remote")
-	uci:set("overthebox", name, "forwarded_port", args.forwarded_port )
-	uci:set("overthebox", name, "ip", args.ip )
-	uci:set("overthebox", name, "port", args.port )
+	uci:set("overthebox", name, "forwarded_port", args.forwarded_port)
+	uci:set("overthebox", name, "ip", args.ip)
+	uci:set("overthebox", name, "port", args.port)
 	uci:set("overthebox", name, "server_public_key", args.server_public_key)
 	uci:set("overthebox", name, "remote_public_key", args.remote_public_key)
 
@@ -636,24 +679,40 @@ function remoteAccessConnect(args)
 	uci:commit("overthebox")
 
 	local ret, rcode = run("/etc/init.d/otb-remote restart")
-	if not status_code_ok(rcode) then return false, "error on restart otb-remote daemon" end
+	if not status_code_ok(rcode) then return false, "error on otb-remote daemon restart" end
 	return true, "ok"
 end
 
 function remoteAccessDisconnect(args)
-	if not args then
-		return false, "no arguments"
+	if not args or not exists(args, 'remote_access_id', 'port') then
+		return false, "no arguments or missing"
 	end
 
-	local name="remote"..args.port
+	-- TODO: Remember to remove oldName and the requirement for 'port' to be in args
+	-- once all old remote accesses have been deleted or expired.
+	local oldName = "remote" .. args.port
+	local name = remoteAccessIdToUci(args.remote_access_id)
 
 	local uci = uci.cursor()
-	uci:delete("overthebox", name)
-	uci:commit("overthebox")
-	uci:save("overthebox")
 
-	local ret, rcode = run("/etc/init.d/otb-remote stop")
-	if not status_code_ok(rcode) then return false, "error on stop otb-remote daemon" end
+	local luci_user = uci:get("overthebox", oldName, "luci_user")
+	if luci_user == nil then
+		luci_user = uci:get("overthebox", name, "luci_user")
+	end
+
+	-- Delete luci user if we created one earlier
+	if luci_user ~= nil then
+		local ret, rcode = run("userdel -f " .. luci_user)
+		if not status_code_ok(rcode) then return false, "error when deleting user " .. luci_user end
+	end
+
+	uci:delete("overthebox", oldName)
+	uci:delete("overthebox", name)
+	uci:save("overthebox")
+	uci:commit("overthebox")
+
+	local ret, rcode = run("/etc/init.d/otb-remote restart")
+	if not status_code_ok(rcode) then return false, "error on otb-remote daemon restart" end
 	return true, "ok"
 end
 
@@ -698,10 +757,11 @@ end
 
 -- all our packages, and the minimum version needed.
 local pkgs = { 
-    overthebox='0.2-17',
-    lua='5.1.5-3',
-    liblua='5.1.5-3',
-    luac='5.1.5-3',
+    ["sqm-scripts"]='remove',
+    ["overthebox"]='0.3-17',
+    ["lua"]='5.1.5-3',
+    ["liblua"]='5.1.5-3',
+    ["luac"]='5.1.5-3',
     ["luci-base"]='git-16.067.54393-f931ee9-1',
     ["luci-mod-admin-full"]='git-16.067.54393-f931ee9-1',
     ["luci-app-overthebox"]='git-16.067.54393-f931ee9-1',
@@ -709,21 +769,22 @@ local pkgs = {
     ["shadowsocks-libev"]='2.4.5-5',
     ["luci-theme-ovh"]='v0.1-3',
     ["dnsmasq-full"]='2.75-8',
-    ["sqm-scripts"]='1.0.5-8',
-    ["luci-app-sqm"]='1.0.5-8',
-    mptcp='1.0.0-6',
-    netifd='2015-08-25-58',
-    mwan3otb='1.7-16',
-    bosun='0.4.0-0.8',
-    vtund='3.0.3-12',
-    e2fsprogs='1.42.12-1',
-    e2freefrag='1.42.12-1',
-    dumpe2fs='1.42.12-1',
-    resize2fs='1.42.12-1',
-    tune2fs='1.42.12-1',
-    libsodium='1.0.8-2',
-    glorytun='0.0.26-8',
-    rdisc6='1.0.3-1',
+    ["mptcp"]='1.0.0-6',
+    ["netifd"]='2015-08-25-58',
+    ["mwan3otb"]='1.7-22',
+    ["bosun"]='0.4.0-0.8',
+    ["vtund"]='3.0.3-12',
+    ["e2fsprogs"]='1.42.12-1',
+    ["e2freefrag"]='1.42.12-1',
+    ["dumpe2fs"]='1.42.12-1',
+    ["resize2fs"]='1.42.12-1',
+    ["tune2fs"]='1.42.12-1',
+    ["libsodium"]='1.0.8-2',
+    ["glorytun"]='0.0.32-1',
+    ["glorytun-udp"]='0.0.51-mud-1',
+    ["bandwidth"]='0.6',
+    ["rdisc6"]='1.0.3-1',
+    ["luci-app-sqm"]='remove',
     ['luci-app-qos']='remove',
     ['qos-scripts']='remove'
 }
@@ -974,7 +1035,7 @@ function update_confmwan()
 	local uci = uci.cursor()
 	-- Check if we need to update mwan conf
 	local oldmd5 = uci:get("mwan3", "netconfchecksum")
-	local newmd5 = string.match(sys.exec("uci -q export network | md5sum"), "[0-9a-f]*")
+	local newmd5 = string.match(sys.exec("uci -q export network | egrep -v 'upload|download|trafficcontrol|label' | md5sum"), "[0-9a-f]*")
 	if oldmd5 and (oldmd5 == newmd5) then
 		log("update_confmwan: no changes !")
 		return false, nil
@@ -1021,6 +1082,8 @@ function update_confmwan()
 	local tracking_servers = {}
 	table.insert( tracking_servers, "51.254.49.132" )
 	table.insert( tracking_servers, "51.254.49.133" )
+	local tracking_tunnels = {}
+	table.insert( tracking_tunnels, "169.254.254.1" )
 	-- 
 	local interfaces={}
 	local size_interfaces = 0 -- table.getn( does not work....
@@ -1068,7 +1131,10 @@ function update_confmwan()
 				uci:set("mwan3", section[".name"], "interface")
 				if uci:get("mwan3", section[".name"], "edited") ~= "1" then
 					uci:set("mwan3", section[".name"], "enabled", "1")
-					uci:delete("mwan3", section[".name"], "track_ip") -- No tracking ip for tunnel interface
+					if next(tracking_tunnels) then
+						uci:set_list("mwan3", section[".name"], "track_ip", tracking_tunnels) -- No tracking ip for tunnel interface
+					end
+					uci:set("mwan3", section[".name"], "track_method","icmp")
 					uci:set("mwan3", section[".name"], "reliability", "1")
 					uci:set("mwan3", section[".name"], "count", "1")
 					uci:set("mwan3", section[".name"], "timeout", "2")
@@ -1084,7 +1150,10 @@ function update_confmwan()
 				uci:set("mwan3", "tun0", "interface")
 				if uci:get("mwan3", "tun0", "edited") ~= "1" then
 					uci:set("mwan3", "tun0", "enabled", "1")
-					uci:delete("mwan3", "tun0", "track_ip") -- No tracking ip so tun0 is always up
+					if next(tracking_tunnels) then
+						uci:set_list("mwan3", "tun0", "track_ip", tracking_tunnels) -- No tracking ip for tunnel interface
+					end
+					uci:set("mwan3", section[".name"], "track_method","icmp")
 					uci:set("mwan3", "tun0", "reliability", "1")
 					uci:set("mwan3", "tun0", "count", "1")
 					uci:set("mwan3", "tun0", "timeout", "2")
@@ -1379,7 +1448,7 @@ function update_confmwan()
 		uci:set("mwan3", "voip", "rule")
 		if uci:get("mwan3", "voip", "edited") ~= "1" then
 			uci:set("mwan3", "voip", "proto", "udp")
-			-- uci:set("mwan3", "voip", "dest_ip", '91.121.128.0/23')
+			uci:set("mwan3", "voip", "dest_ip", '91.121.128.0/23')
 			uci:set("mwan3", "voip", "use_policy", "failover")
 		end
 		uci:set("mwan3", "voip", "generated", "1")
