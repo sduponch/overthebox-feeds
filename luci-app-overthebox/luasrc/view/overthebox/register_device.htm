@@ -31,7 +31,7 @@
 
     local function wizard(title, width, height, status, id)
         local arrowLen = height / 3
-        print("<svg class=\""..status.."\" style=\"left:"..wizardStack..";width:"..width.."\" id=\""..id.."\" data-container=\""..id.."Process\">")
+        print("<svg class=\""..status.."\" style=\"left:"..wizardStack.."px;width:"..width.."px\" id=\""..id.."\" data-container=\""..id.."Process\">")
         if (wizardStack == 0) then
             print("<path d=\"M 0 0 L "..(width - arrowLen).." 0 L "..width.." "..(height / 2).." L "..(width - arrowLen).." "..height.." L 0 "..height.." L 0 0\"/>")
             print("<text x=\"10%\" y=\"50%\" class=\"title\">" .. title .. "</text>")

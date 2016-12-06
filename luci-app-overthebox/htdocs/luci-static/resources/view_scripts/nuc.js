@@ -237,14 +237,14 @@
             url: otb.constants.changePasswordURL,
             method: "POST",
             dataType: "json",
-            contentType: "application/json",
+            contentType: "application/x-www-form-urlencoded",
             data: {
                 p1: password1,
                 p2: password2,
                 token: token
             },
             success: function (data, status) {
-                if ((status === "success") && (data.wans)) {
+                if ((status === "success")) {
                     callback(null, data);
                 } else {
                     callback(status, false);
