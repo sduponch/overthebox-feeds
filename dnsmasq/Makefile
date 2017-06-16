@@ -164,6 +164,33 @@ ifneq ($(CONFIG_PACKAGE_dnsmasq_full_dnssec),)
 endif
 endef
 
+Package/dnsmasq-sharednetdev = $(Package/dnsmasq)
+Package/dnsmasq-sharednetdev-dhcpv6 = $(Package/dnsmasq-dhcpv6)
+Package/dnsmasq-sharednetdev-full = $(Package/dnsmasq-full)
+
+Package/dnsmasq-sharednetdev-dhcpv6/conffiles = $(Package/dnsmasq/conffiles)
+Package/dnsmasq-sharednetdev-full/conffiles = $(Package/dnsmasq/conffiles)
+
+define Package/dnsmasq-sharednetdev/install
+$(call Package/dnsmasq/install,$(1))
+»···$(INSTALL_BIN) ./files/dnsmasq.init.shared_netdev $(1)/etc/init.d/dnsmasq
+endef
+
+define Package/dnsmasq-sharednetdev-dhcpv6/install
+$(call Package/dnsmasq-dhcpv6/install,$(1))
+»···$(INSTALL_BIN) ./files/dnsmasq.init.shared_netdev $(1)/etc/init.d/dnsmasq
+endef
+
+define Package/dnsmasq-sharednetdev-full/install
+$(call Package/dnsmasq-full/install,$(1))
+»···$(INSTALL_BIN) ./files/dnsmasq.init.shared_netdev $(1)/etc/init.d/dnsmasq
+endef
+
 $(eval $(call BuildPackage,dnsmasq))
 $(eval $(call BuildPackage,dnsmasq-dhcpv6))
 $(eval $(call BuildPackage,dnsmasq-full))
+
+$(eval $(call BuildPackage,dnsmasq-sharednetdev))
+$(eval $(call BuildPackage,dnsmasq-sharednetdev-dhcpv6))
+$(eval $(call BuildPackage,dnsmasq-sharednetdev-full))
+
